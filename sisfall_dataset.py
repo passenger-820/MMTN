@@ -1,10 +1,8 @@
 import torch
-import torch.nn as nn
-import math
 from torch.utils.data import Dataset
 
 from features import GetFeaWinFromDataset
-from utils import GetPthData, ButterWorth
+from utils import GetPthData, ButterWorth, PositionalEncoding, modalEmbedding, modalEmbeddingAblation
 
 """
 部分数据集的传感器数据是ADC数据（例如sisfall），需要借助公式转换为我们所认知的重力加速度，角速度和磁力
@@ -36,69 +34,6 @@ class AD2Raw():
         return self.ori_data
 
 
-
-"""
-由于我们的数据是严格的时许数据，所有position embedding可以使用 正余弦不可学习PE（可学习的应该也可以，学出来效果可能是一样的严格时序）
-参考Transformer PE - sin-cos 1d：https://blog.csdn.net/qq_19841133/article/details/126245602
-
-这是Transformer原文里用的
-
-PE矩阵可以看作是两个矩阵相乘，一个矩阵是pos（/左边），另一个矩阵是i（/右边），奇数列和偶数列再分别乘sin和cos
-可以实现任意位置通过已有的位置编码线性组合表示，不要求偶数列是sin，奇数列是cos，也可以前一半是sin，后一半是cos
-"""
-class PositionalEncoding(nn.Module):
-    """
-    参考他的理解 https://blog.csdn.net/weixin_41790863/article/details/123480570
-    注意：在Positional Encoding的时候，在forward中已经将Embedding加了进去，因此，PositionalEncoding类返回的结果直接进EncoderLayer。
-
-    我试了下这样输入
-        raw = torch.randint(0,5,(3,3,16))
-        pos_emd = PositionalEncoding(d_model=16)(raw)  返回结果是[3,3,16]
-
-    Positional Encoding需要d_model为偶数，即最后一维得是偶数，接着为进行modalEmbedding，
-        这样最后一维会+1变为奇数，即d_model为奇数。而TransformerEncoder需要 d_m = d_v = d_model / nhead
-        为此，让这个偶数为62，+1为63，nhead取7或9
-    """
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-
-        # pos代表的是单词在句子中的索引，这点需要注意；比如max_len是128个，那么索引就是从0，1，2，...,127
-        # 假设我的d_model是512，2i以步长2从0取到了512，那么i对应取值就是0,1,2...255
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-
-        pe[:, 0::2] = torch.sin(position * div_term) # 这里需要注意的是pe[:, 0::2]这个用法，就是从0开始到最后面，步长为2，其实代表的就是偶数位置
-        pe[:, 1::2] = torch.cos(position * div_term) # 这里需要注意的是pe[:, 1::2]这个用法，就是从1开始到最后面，步长为2，其实代表的就是奇数位置
-        # 下面这行代码之后，我们得到的pe形状是：[max_len * 1 * d_model]
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe) # 定一个缓冲区，其实简单理解为这个参数不更新就可以
-
-    def forward(self, x):
-        # print(x)
-        # print(self.pe)
-        x = x + self.pe[:x.size(0), :]
-        return self.dropout(x)
-
-
-def modalEmbedding(modal_num, batch_data):
-    """
-    先PositionalEncoding之后再modalEmbedding，shape变为[batch，axis，points+1]
-    raw = torch.randn((2,9,4))
-    print(raw)
-    ml = modalEmbedding(3, raw)
-    print(ml)
-    """
-    modal_types = torch.zeros(3)
-    for i in range(modal_num - 1):
-        modal_types = torch.cat([modal_types, torch.ones(3) + i])
-    modal_embedded = torch.cat([modal_types.view(1, modal_num*3, 1).expand(batch_data.shape[0], -1, -1), batch_data], dim=2)
-    return modal_embedded
-
 class MySisfallData(Dataset):
 
     def __init__(self):
@@ -106,22 +41,22 @@ class MySisfallData(Dataset):
         """
         读取的数据就是batch，axis，points
         """
-        # adl_12_raw_40Hz = GetPthData(pth_data_dir=r"d:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
-        #                              file_name="SisFall_ADL_12.pth").down_sample_to_40Hz()
-        # adl_25_raw_40Hz = GetPthData(pth_data_dir=r"d:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
-        #                              file_name="SisFall_ADL_25.pth").down_sample_to_40Hz()
-        # adl_100_raw_40Hz = GetPthData(pth_data_dir=r"d:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
-        #                               file_name="SisFall_ADL_100.pth").down_sample_to_40Hz()
-        # fall_15_raw_40Hz = GetPthData(pth_data_dir=r"d:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
-        #                               file_name="SisFall_Fall_15.pth").down_sample_to_40Hz()
-        adl_12_raw_40Hz = GetPthData(pth_data_dir=r"f:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
+        adl_12_raw_40Hz = GetPthData(pth_data_dir=r"d:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
                                      file_name="SisFall_ADL_12.pth").down_sample_to_40Hz()
-        adl_25_raw_40Hz = GetPthData(pth_data_dir=r"f:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
+        adl_25_raw_40Hz = GetPthData(pth_data_dir=r"d:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
                                      file_name="SisFall_ADL_25.pth").down_sample_to_40Hz()
-        adl_100_raw_40Hz = GetPthData(pth_data_dir=r"f:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
+        adl_100_raw_40Hz = GetPthData(pth_data_dir=r"d:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
                                       file_name="SisFall_ADL_100.pth").down_sample_to_40Hz()
-        fall_15_raw_40Hz = GetPthData(pth_data_dir=r"f:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
+        fall_15_raw_40Hz = GetPthData(pth_data_dir=r"d:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
                                       file_name="SisFall_Fall_15.pth").down_sample_to_40Hz()
+        # adl_12_raw_40Hz = GetPthData(pth_data_dir=r"f:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
+        #                              file_name="SisFall_ADL_12.pth").down_sample_to_40Hz()
+        # adl_25_raw_40Hz = GetPthData(pth_data_dir=r"f:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
+        #                              file_name="SisFall_ADL_25.pth").down_sample_to_40Hz()
+        # adl_100_raw_40Hz = GetPthData(pth_data_dir=r"f:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
+        #                               file_name="SisFall_ADL_100.pth").down_sample_to_40Hz()
+        # fall_15_raw_40Hz = GetPthData(pth_data_dir=r"f:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
+        #                               file_name="SisFall_Fall_15.pth").down_sample_to_40Hz()
 
         """
         feature window 以及 label
@@ -158,14 +93,15 @@ class MySisfallData(Dataset):
 
         """
         pos和modal embedding
-        目前弃用pos embedding
         """
         self.signals = PositionalEncoding(d_model=120)(self.signals)
-        self.signals = modalEmbedding(modal_num=3, batch_data=self.signals)
+        self.signals = modalEmbedding(modal_num=2, batch_data=self.signals) # a,g
+        # self.signals = modalEmbedding(modal_num=3, batch_data=self.signals) # a,g,a
+        # self.signals = modalEmbeddingAblation(modal_num=2, batch_data=self.signals) # a,g
+        # self.signals = modalEmbeddingAblation(modal_num=3, batch_data=self.signals) # a,g,a
 
         self.signals_lowPass = PositionalEncoding(d_model=120)(self.signals_lowPass)
         self.signals_lowPass = modalEmbedding(modal_num=3, batch_data=self.signals_lowPass)
-
 
     def __len__(self):
         return len(self.signals)
@@ -176,8 +112,6 @@ class MySisfallData(Dataset):
         label = self.label[idx]
 
         return signal, signal_filtered, label
-
-
 
 if __name__ == '__main__':
     print('')
