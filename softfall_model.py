@@ -3,12 +3,8 @@ import time
 import torch
 from torch import nn
 from visdom import Visdom
-import torch.nn.functional as F
-import torch.optim as optim
 from utils import AverageMeter, ProgressMeter
 # 数据集
-from sisfall_dataset import MySisfallData
-from mobiact_dataset import MyMobiactData
 from softfall_dataset import MySoftfallData
 
 """ 这一部分是部分网络层 """
@@ -51,8 +47,6 @@ class lstm(nn.Module):
         return x[0]
 
 """ 使用的数据集 """
-# my_dataset = MySisfallData()
-# my_dataset = MyMobiactData()
 my_dataset = MySoftfallData()
 
 
@@ -72,10 +66,10 @@ train_loader = torch.utils.data.DataLoader(
 
 test_loader = torch.utils.data.DataLoader(
     test_dataset, batch_size=128, shuffle=False,
-    num_workers=0, pin_memory=True, drop_last=True)
+    num_workers=0, pin_memory=True, drop_last=False)
 
 """ 模型 """
-new_model = nn.Sequential(
+model = nn.Sequential(
     # transfomer encoder + linear 或者 用 lstm + linear
     # 注意：数据长度变化要对应
     backbone(d_model=77, nhead=11),
@@ -94,14 +88,14 @@ new_model = nn.Sequential(
     nn.Linear(8, 2)
 )
 # 输出模型
-print(new_model)
+print(model)
 
 """ 训练模型的一些配置 """
 # 设备：gpu
 device = torch.device('cuda:0')
 
 # 模型搬到gpu
-net = new_model.to(device)
+net = model.to(device)
 
 # 总轮数
 epochs = 2000
@@ -133,41 +127,13 @@ viz = Visdom()
 viz.line([0.], [0.], win='train', opts=dict(title='train loss'))
 viz.line([0.], [0.], win='test', opts=dict(title='test acc'))
 
-
-# D:\BaiduNetdiskWorkspace\研究生\读论文\对比学习\SimSiam\code\官方\myTest\ckpt\checkpoint_0099.pth.tar
-# ckpt = torch.load("../ckpt/checkpoint_0050.pth.tar")
-
-# pre_model = simsiam_builder.SimSiam()
-
-
-# pre_model.load_state_dict(ckpt['state_dict'], strict=False)
-
-
-# new_model = nn.Sequential(*list(pre_model.children()))
-# new_model = nn.Sequential(*list(pre_model.children())[:-1])
-# new_model = nn.Sequential(*list(pre_model.children())[:-2])
-
-
-# for _, param in new_model.named_parameters():
-#         param.requires_grad = False
-
-# torch.cuda.set_device('cuda:0')
-
-
-
-
-
-
-
-
-
-
-
-
-
 """ 开始训练（记得在当前python环境输入： python -m visdom.server 以启动visdom） """
 # visdom记录的训练损失
 global_loss = 0
+
+# 绘制实验过程图用的
+trail_train_loss = torch.tensor(-1)
+trail_test_accuracy = torch.tensor(-1)
 
 for epoch in range(epochs):
     # 根据epoch进度调整学习率
@@ -185,6 +151,10 @@ for epoch in range(epochs):
     net.train()
     # 用于记录运行时间
     end = time.time()
+
+    # 测试集的混淆矩阵使用：只是为了方便调用hstack，才生成个2，同时区分0和1，反正后面会丢掉这个2
+    test_labels = torch.tensor(2).to(device)
+    preds = torch.tensor(2).to(device)
 
     for step, (train_signal, _, train_label) in enumerate(train_loader):
         """训练数据：用哪些轴，是否滤波"""
@@ -217,6 +187,9 @@ for epoch in range(epochs):
     # 每个epoch最后一个batch的损失显示到visdom中
     viz.line([global_loss], [epoch], win='train', update='append')
 
+    # 绘制实验过程图用的：继续堆叠数据
+    trail_train_loss = torch.hstack([trail_train_loss, torch.tensor(global_loss)])
+
     # 切换到测试模式
     net.eval()
     with torch.no_grad():
@@ -224,21 +197,58 @@ for epoch in range(epochs):
         test_loss = 0
         # 预测正确的个数
         correct = 0
+
         for (test_signal, _, test_label) in test_loader:
-            # test_signal = test_signal[:, 0:6, ...].to(device)
-            test_signal = test_signal.to(device)
+            # test_signal = test_signal[:, 0:6, ...].to(device) # a,g
+            test_signal = test_signal.to(device) # a,g,m
             test_label = test_label.to(device)
+
+            # 混淆矩阵使用：继续堆叠数据
+            test_labels = torch.hstack([test_labels, test_label])
 
             test_logits = net(test_signal)
             test_loss += criteon(test_logits, test_label)
 
             pred = test_logits.argmax(dim=1)
-            correct += pred.eq(test_label).float().sum().item()
-        test_loss /= len(
-            test_loader.dataset)  # 这个平均loss肯定小啊，train中的是每个step下的，这里是epoch的平均，所以肯定小，下面vis时，得移到里面，再说吧！！！！！！！！！！！！！！！！！！！！！！
 
-        print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-            test_loss, correct, len(test_loader.dataset),
+            # 混淆矩阵使用：继续堆叠数据
+            preds = torch.hstack([preds, pred])
+
+            correct += pred.eq(test_label).float().sum().item()
+
+        print('\nTest set: Accuracy: {}/{} ({:.0f}%)\n'.format(
+            correct, len(test_loader.dataset),
             100. * correct / len(test_loader.dataset)))
 
         viz.line([correct / len(test_loader.dataset)], [epoch], win='test', update='append')
+
+        # 绘制实验过程图用的：继续堆叠数据
+        trail_test_accuracy = torch.hstack([trail_test_accuracy, torch.tensor(correct / len(test_loader.dataset))])
+
+    # 不要最开始的2
+    test_labels = test_labels[1:]
+    preds = preds[1:]
+
+    # 绘制实验过程图用的,就第一个epoch需要把-1去掉，其他epoch正常往后加就行了
+    if epoch == 0:
+        trail_train_loss = trail_train_loss[1:]
+        trail_test_accuracy = trail_test_accuracy[1:]
+        print("第一个epoch存一次：训练损失trail_train_loss和预测准确率trail_test_accuracy")
+    else:
+        print("之后每个epoch都重新存一次或者在文件后面追加：训练损失trail_train_loss和预测准确率trail_test_accuracy")
+
+    if epoch > 0 and epoch % 10 == 0:
+        print("每10个epoch存一次：标签test_labels和预测preds")
+
+    if epoch > 0 and epoch % 50 == 0:
+        print("每50个epoch存一次：模型参数")
+        # torch.save(model.state_dict(), 'model_weights.pth')  # 这只是保存模型的参数，buffer，并没有保存模型的图
+        """
+        如果需要使用保存的模型来推理，可以
+            model = your_model
+            model.load_state_dict(torch.load('model_weights.pth')) # 把内容填到模型图里
+            model.eval()
+        """
+
+
+

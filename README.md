@@ -1,3 +1,6 @@
+# 重要
+只做消融实验，就看softfall_model就行，其他数据集内容的不用管
+
 # 数据
 batch，axis，points
 
