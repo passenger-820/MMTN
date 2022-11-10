@@ -1,3 +1,4 @@
+from paras import get_parameters
 import torch
 import torch.nn as nn
 import os
@@ -5,6 +6,8 @@ import math
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import signal
+
+args = get_parameters()
 
 # AverageMeter可以记录当前的输出，累加到某个变量之中，然后根据需要可以打印出历史上的平均
 class AverageMeter(object):
@@ -70,11 +73,11 @@ class GetPthData():
     """
     下采样至40Hz（因为这是从200Hz下采样，所以间隔200/40=5）。
     这个函数可以泛化，传递原始Hz，目标Hz，和所需轴数，返回下采样数据。
-    上采样再参照他另写一个。
+    可以用step参数改变下采样的频率
     """
-    def down_sample_to_40Hz(self):
+    def down_sample(self, step=args.step_down):
         data = self.get_raw()
-        return data[:, :, ::5]
+        return data[:, :, ::step]
 
     """
     找到指定窗口的数据
@@ -442,7 +445,7 @@ if __name__ == '__main__':
     #                      file_name="SisFall_ADL_12.pth")
     getData = GetPthData(pth_data_dir=r"d:\datasets\MachineLearning\FallDetection\SisFall\ori_pth",
                          file_name="SisFall_Fall_15.pth")
-    rawData_40Hz = getData.down_sample_to_40Hz()
+    rawData_40Hz = getData.down_sample()
     a = rawData_40Hz[0:2,:,:]
     draw = drawAxisPicturesWithData(batch_data=a,picture_title="test",save_root='static/figures/')
     # draw.pltTripleAxis()
